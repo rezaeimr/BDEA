@@ -1,5 +1,5 @@
 ## ============================================================
-## 4_categories.R — UpSet plots + category classification
+## 4_categories.R — UpSet + categories (+ gate + shifted-baseline)
 ## ============================================================
 
 suppressPackageStartupMessages({
@@ -67,10 +67,15 @@ for (drug in drugs) {
   up_int        <- load_id_table(file.path(int_tbl, paste0("up_int_",   drug, ".tsv")), analysis_level)
   down_int      <- load_id_table(file.path(int_tbl, paste0("down_int_", drug, ".tsv")), analysis_level)
   
+  ## gate sets (drug_OHT vs drug) in DE (shrunk)
+  gate_up       <- load_id_table(file.path(de_tbl, paste0("up_",   drug, "_OHT__", drug, ".tsv")), analysis_level)
+  gate_down     <- load_id_table(file.path(de_tbl, paste0("down_", drug, "_OHT__", drug, ".tsv")), analysis_level)
+  
   if (analysis_level == "gene") {
     all_ids <- unique(na.omit(c(
       up_drug$gene_id, up_drug_OHT$gene_id, down_drug$gene_id, down_drug_OHT$gene_id,
-      up_int$gene_id, down_int$gene_id
+      up_int$gene_id, down_int$gene_id,
+      gate_up$gene_id, gate_down$gene_id
     )))
     if (length(all_ids) == 0) {
       message("  [skip] No genes found for ", drug)
@@ -80,24 +85,29 @@ for (drug in drugs) {
     upset_df <- tibble(gene_id = all_ids)
     ref_col <- upset_df$gene_id
     
-    upset_df[[paste0("up_", drug)]]           <- ref_col %in% up_drug$gene_id
-    upset_df[[paste0("up_", drug, "_OHT")]]   <- ref_col %in% up_drug_OHT$gene_id
-    upset_df[[paste0("down_", drug)]]         <- ref_col %in% down_drug$gene_id
-    upset_df[[paste0("down_", drug, "_OHT")]] <- ref_col %in% down_drug_OHT$gene_id
-    upset_df[[paste0("up_int_", drug)]]       <- ref_col %in% up_int$gene_id
-    upset_df[[paste0("down_int_", drug)]]     <- ref_col %in% down_int$gene_id
+    upset_df[[paste0("up_", drug)]]                 <- ref_col %in% up_drug$gene_id
+    upset_df[[paste0("up_", drug, "_OHT")]]         <- ref_col %in% up_drug_OHT$gene_id
+    upset_df[[paste0("down_", drug)]]               <- ref_col %in% down_drug$gene_id
+    upset_df[[paste0("down_", drug, "_OHT")]]       <- ref_col %in% down_drug_OHT$gene_id
+    upset_df[[paste0("up_int_", drug)]]             <- ref_col %in% up_int$gene_id
+    upset_df[[paste0("down_int_", drug)]]           <- ref_col %in% down_int$gene_id
+    
+    ## explicit gate membership columns (kept for Part 2)
+    upset_df[[paste0("up_", drug, "_OHT__", drug)]]   <- ref_col %in% gate_up$gene_id
+    upset_df[[paste0("down_", drug, "_OHT__", drug)]] <- ref_col %in% gate_down$gene_id
     
   } else {
     all_iso <- unique(na.omit(c(
       up_drug$isoform_id, up_drug_OHT$isoform_id, down_drug$isoform_id, down_drug_OHT$isoform_id,
-      up_int$isoform_id, down_int$isoform_id
+      up_int$isoform_id, down_int$isoform_id,
+      gate_up$isoform_id, gate_down$isoform_id
     )))
     if (length(all_iso) == 0) {
       message("  [skip] No isoforms found for ", drug)
       next
     }
     
-    map_df <- bind_rows(up_drug, up_drug_OHT, down_drug, down_drug_OHT, up_int, down_int) %>%
+    map_df <- bind_rows(up_drug, up_drug_OHT, down_drug, down_drug_OHT, up_int, down_int, gate_up, gate_down) %>%
       distinct(isoform_id, gene_id)
     
     upset_df <- tibble(isoform_id = all_iso) %>%
@@ -105,12 +115,16 @@ for (drug in drugs) {
     
     ref_col <- upset_df$isoform_id
     
-    upset_df[[paste0("up_", drug)]]           <- ref_col %in% up_drug$isoform_id
-    upset_df[[paste0("up_", drug, "_OHT")]]   <- ref_col %in% up_drug_OHT$isoform_id
-    upset_df[[paste0("down_", drug)]]         <- ref_col %in% down_drug$isoform_id
-    upset_df[[paste0("down_", drug, "_OHT")]] <- ref_col %in% down_drug_OHT$isoform_id
-    upset_df[[paste0("up_int_", drug)]]       <- ref_col %in% up_int$isoform_id
-    upset_df[[paste0("down_int_", drug)]]     <- ref_col %in% down_int$isoform_id
+    upset_df[[paste0("up_", drug)]]                 <- ref_col %in% up_drug$isoform_id
+    upset_df[[paste0("up_", drug, "_OHT")]]         <- ref_col %in% up_drug_OHT$isoform_id
+    upset_df[[paste0("down_", drug)]]               <- ref_col %in% down_drug$isoform_id
+    upset_df[[paste0("down_", drug, "_OHT")]]       <- ref_col %in% down_drug_OHT$isoform_id
+    upset_df[[paste0("up_int_", drug)]]             <- ref_col %in% up_int$isoform_id
+    upset_df[[paste0("down_int_", drug)]]           <- ref_col %in% down_int$isoform_id
+    
+    ## explicit gate membership columns (kept for Part 2)
+    upset_df[[paste0("up_", drug, "_OHT__", drug)]]   <- ref_col %in% gate_up$isoform_id
+    upset_df[[paste0("down_", drug, "_OHT__", drug)]] <- ref_col %in% gate_down$isoform_id
   }
   
   write.table(
@@ -120,6 +134,13 @@ for (drug in drugs) {
   )
   
   sets <- setdiff(names(upset_df), c("gene_id", "isoform_id"))
+  
+  ## hide gate columns from UpSet plot (still present in upset_df for Part 2)
+  gate_cols <- c(
+    paste0("up_",   drug, "_OHT__", drug),
+    paste0("down_", drug, "_OHT__", drug)
+  )
+  sets <- setdiff(sets, gate_cols)
   
   p <- upset(
     upset_df,
@@ -158,18 +179,24 @@ for (drug in drugs) {
   up_int     <- paste0("up_int_", drug)
   down_int   <- paste0("down_int_", drug)
   
+  ## gate columns
+  up_gate    <- paste0("up_",   drug, "_OHT__", drug)
+  down_gate  <- paste0("down_", drug, "_OHT__", drug)
+  
   has_col <- function(x) if (x %in% names(df)) df[[x]] else rep(FALSE, nrow(df))
   U1 <- has_col(up_noOHT); U2 <- has_col(up_OHT)
   D1 <- has_col(down_noOHT); D2 <- has_col(down_OHT)
   UI <- has_col(up_int); DI <- has_col(down_int)
+  UG <- has_col(up_gate)
+  DG <- has_col(down_gate)
   
   category <- rep(NA_character_, nrow(df))
   
-  ## enhanced (previously amplified)
+  ## enhanced
   category[(U1 & U2 & UI) | (!U1 & U2 & UI)] <- "enhanced_up"
   category[(D1 & D2 & DI) | (!D1 & D2 & DI)] <- "enhanced_down"
   
-  ## suppressed (previously buffered)
+  ## suppressed
   category[(U1 & U2 & DI) | (U1 & !U2 & DI)] <- "suppressed_up"
   category[(D1 & D2 & UI) | (D1 & !D2 & UI)] <- "suppressed_down"
   
@@ -177,22 +204,34 @@ for (drug in drugs) {
   category[(D1 & U2 & UI)] <- "switched_positive"
   category[(U1 & D2 & DI)] <- "switched_negative"
   
-  ## independent (same direction, no interaction dominance)
+  ## independent
   is_unassigned <- is.na(category)
   category[is_unassigned & (U1 & U2)] <- "independent_up"
   category[is_unassigned & (D1 & D2)] <- "independent_down"
   
+  ## ---------------- Split by gate (FIXED) ----------------
+  shifted_sub <- rep(NA_character_, nrow(df))
+  
+  shifted_sub[category == "enhanced_up"       & !UG] <- "shifted_baseline_enhanced_up"
+  shifted_sub[category == "enhanced_down"     & !DG] <- "shifted_baseline_enhanced_down"
+  shifted_sub[category == "suppressed_up"     & !UG] <- "shifted_baseline_suppressed_up"
+  shifted_sub[category == "suppressed_down"   & !DG] <- "shifted_baseline_suppressed_down"
+  
+  category[!is.na(shifted_sub)] <- shifted_sub[!is.na(shifted_sub)]
   df$category <- category
   
-  ## Drop unclassified rows (optional but recommended)
+  ## Drop unclassified
   df2 <- df[!is.na(df$category), , drop = FALSE]
   if (nrow(df2) == 0) next
-  
+
   cat_list <- split(df2, df2$category)
   
   for (nm in names(cat_list)) {
     subdf <- cat_list[[nm]]
-    if (is.null(subdf) || nrow(subdf) == 0) next
+    if (is.null(subdf) || nrow(subdf) == 0) {
+      message("  (no gene detected in ", nm, " category)")
+      next
+    }
     
     if (analysis_level == "gene") {
       out_df <- subdf %>%
@@ -200,6 +239,12 @@ for (drug in drugs) {
         dplyr::mutate(gene_id = strip_version(gene_id)) %>%
         dplyr::distinct() %>%
         dplyr::left_join(gene2sym, by = "gene_id")
+      
+      if (nrow(out_df) == 0) {
+        message("  (no gene detected in ", nm, " category)")
+        next
+      }
+      
     } else {
       out_df <- subdf %>%
         dplyr::select(isoform_id, gene_id) %>%
@@ -209,6 +254,11 @@ for (drug in drugs) {
         ) %>%
         dplyr::distinct() %>%
         dplyr::left_join(gene2sym, by = "gene_id")
+      
+      if (nrow(out_df) == 0) {
+        message("  (no gene detected in ", nm, " category)")
+        next
+      }
     }
     
     write.table(
@@ -216,6 +266,18 @@ for (drug in drugs) {
       file.path(out_tbl, paste0(nm, "_", drug, ".tsv")),
       sep = "\t", quote = FALSE, row.names = FALSE
     )
+  }
+  
+  ## Also report categories that were not created at all for this drug
+  expected_cats <- c(
+    "enhanced_up","enhanced_down","suppressed_up","suppressed_down",
+    "switched_positive","switched_negative","independent_up","independent_down",
+    "shifted_baseline_enhanced_up","shifted_baseline_enhanced_down",
+    "shifted_baseline_suppressed_up","shifted_baseline_suppressed_down"
+  )
+  missing_cats <- setdiff(expected_cats, names(cat_list))
+  for (mc in missing_cats) {
+    message("  (no gene detected in ", mc, " category)")
   }
 }
 

@@ -1,6 +1,7 @@
 ## ============================================================
 ## 1_DEAnalysis.R — Modular DE  (gene/isoform)
 ## Corrected: version-stripping for annotation merges + safe volcano scales
+## + ADDED: drug_OHT vs drug contrasts saved as tT_drug_OHT__drug (RAW + SHRUNK)
 ## ============================================================
 
 suppressPackageStartupMessages({
@@ -13,7 +14,6 @@ suppressPackageStartupMessages({
   library(ggrepel)
 })
 
-
 set.seed(1)
 
 ## ---------------- Parameters ----------------
@@ -23,7 +23,7 @@ lfc_cutoff  <- 0
 shrink_type <- "apeglm"
 
 ## -------------------- Parallel backend (RStudio-safe) -----
-BiocParallel::register(SnowParam(workers = n_cores, type = "SOCK"))
+register(SnowParam(workers = n_cores, type = "SOCK"))
 options(mc.cores = n_cores)
 
 ## ---------------- Helper ----------------
@@ -34,38 +34,38 @@ strip_version <- function(x) sub("\\..*$", "", x)
 ## ============================================================
 
 calc_volcano_limits <- function(files, q = 0.995) {
-
+  
   if (length(files) == 0) return(list(x_lim = NULL, y_lim = NULL))
-
+  
   all_lfc <- c()
   all_y   <- c()
-
+  
   for (fp in files) {
     df <- tryCatch(read.delim(fp, check.names = FALSE), error = function(e) NULL)
     if (is.null(df)) next
     if (!all(c("log2FoldChange", "padj") %in% names(df))) next
-
+    
     lfc <- df$log2FoldChange
     p   <- df$padj
-
+    
     ok <- is.finite(lfc) & !is.na(lfc) & is.finite(p) & !is.na(p)
     if (!any(ok)) next
-
+    
     all_lfc <- c(all_lfc, lfc[ok])
     all_y   <- c(all_y, -log10(pmax(p[ok], .Machine$double.xmin)))
   }
-
+  
   if (length(all_lfc) == 0 || length(all_y) == 0)
     return(list(x_lim = NULL, y_lim = NULL))
-
+  
   x_max <- as.numeric(quantile(abs(all_lfc), probs = q, na.rm = TRUE))
   if (!is.finite(x_max) || x_max <= 0)
     x_max <- max(abs(all_lfc), na.rm = TRUE)
-
+  
   y_max <- as.numeric(quantile(all_y[is.finite(all_y)], probs = q, na.rm = TRUE))
   if (!is.finite(y_max) || y_max <= 0)
     y_max <- max(all_y[is.finite(all_y)], na.rm = TRUE)
-
+  
   list(
     x_lim = c(-x_max, x_max),
     y_lim = c(0, y_max)
@@ -92,7 +92,7 @@ dir.create(shr_fig, recursive = TRUE, showWarnings = FALSE)
 # Choose: "gene" or "isoform"
 analysis_level <- "gene"
 
-metadata <- read.delim(file.path(data_dir, "metadata.txt"), check.names = FALSE)
+metadata <- read.delim(file.path(data_dir, "metadata_NMD.txt"), check.names = FALSE)
 stopifnot(all(c("SampleID", "group") %in% colnames(metadata)))
 
 annotation <- read.delim(file.path(data_dir, "annotation.txt"), check.names = FALSE)
@@ -168,40 +168,87 @@ dds2 <- DESeq(dds2, parallel = TRUE)
 counts_summary_raw <- data.frame()
 
 for (g in levels(dds1$group)) {
-
+  
   ref <- if (grepl("_OHT$", g)) "DMSO_OHT" else "DMSO"
   if (g == "DMSO_OHT") ref <- "DMSO"
-
+  
   if (g == ref || !(ref %in% levels(dds1$group))) next
-
+  
   nm <- if (g == "DMSO_OHT") "DMSO_OHT_vs_DMSO" else g
   message(" [RAW] ", nm)
-
+  
   res_raw <- results(dds1, contrast = c("group", g, ref))
   res_df <- as.data.frame(res_raw)
-
+  
   # Strip versions in rownames-derived IDs
   res_df[[id_col]] <- strip_version(rownames(res_df))
-
+  
   # Merge annotation (now version-stripped on both sides)
   res_df <- merge(res_df, annotation2, by = id_col, all.x = TRUE, sort = FALSE)
-
+  
   nc1 <- counts(dds1, normalized = TRUE)
   idx_t <- which(metadata$group == g)
   idx_c <- which(metadata$group == ref)
   res_df$avg_treated <- rowMeans(nc1[, idx_t, drop = FALSE], na.rm = TRUE)
   res_df$avg_control <- rowMeans(nc1[, idx_c, drop = FALSE], na.rm = TRUE)
-
+  
   res_df$sig_raw <- ifelse(!is.na(res_df$padj) & res_df$padj < padj_cutoff & res_df$log2FoldChange >  lfc_cutoff, "up",
                            ifelse(!is.na(res_df$padj) & res_df$padj < padj_cutoff & res_df$log2FoldChange < -lfc_cutoff, "down", "ns"))
-
+  
   write.table(res_df, file.path(tbl_dir, paste0("tT_", nm, ".tsv")),
               sep = "\t", quote = FALSE, row.names = FALSE)
   write.table(subset(res_df, sig_raw == "up"),   file.path(tbl_dir, paste0("up_", nm, ".tsv")),
               sep = "\t", quote = FALSE, row.names = FALSE)
   write.table(subset(res_df, sig_raw == "down"), file.path(tbl_dir, paste0("down_", nm, ".tsv")),
               sep = "\t", quote = FALSE, row.names = FALSE)
+  
+  counts_summary_raw <- rbind(counts_summary_raw, data.frame(
+    contrast = nm,
+    n_up     = sum(res_df$sig_raw == "up"),
+    n_down   = sum(res_df$sig_raw == "down")
+  ))
+}
 
+## ============================================================
+## EXTRA (RAW): drug_OHT vs drug  => tT_drug_OHT__drug
+## ============================================================
+# This adds: tT_<drug>_OHT__<drug>.tsv (+ up/down) into RAW tables
+
+# Identify "drug" groups that have a corresponding "<drug>_OHT" group
+all_groups <- levels(dds1$group)
+drug_groups <- all_groups[!grepl("_OHT$", all_groups)]
+drug_groups <- setdiff(drug_groups, c("DMSO", "DMSO_OHT"))
+
+for (drug in drug_groups) {
+  
+  g_oht <- paste0(drug, "_OHT")
+  if (!(g_oht %in% all_groups)) next
+  
+  nm <- paste0(drug, "_OHT__", drug)
+  message(" [RAW] ", nm)
+  
+  # Always use dds1 (DMSO ref doesn’t matter for explicit contrast)
+  res_raw <- results(dds1, contrast = c("group", g_oht, drug))
+  res_df <- as.data.frame(res_raw)
+  res_df[[id_col]] <- strip_version(rownames(res_df))
+  res_df <- merge(res_df, annotation2, by = id_col, all.x = TRUE, sort = FALSE)
+  
+  nc1 <- counts(dds1, normalized = TRUE)
+  idx_t <- which(metadata$group == g_oht)
+  idx_c <- which(metadata$group == drug)
+  res_df$avg_treated <- rowMeans(nc1[, idx_t, drop = FALSE], na.rm = TRUE)
+  res_df$avg_control <- rowMeans(nc1[, idx_c, drop = FALSE], na.rm = TRUE)
+  
+  res_df$sig_raw <- ifelse(!is.na(res_df$padj) & res_df$padj < padj_cutoff & res_df$log2FoldChange >  lfc_cutoff, "up",
+                           ifelse(!is.na(res_df$padj) & res_df$padj < padj_cutoff & res_df$log2FoldChange < -lfc_cutoff, "down", "ns"))
+  
+  write.table(res_df, file.path(tbl_dir, paste0("tT_", nm, ".tsv")),
+              sep = "\t", quote = FALSE, row.names = FALSE)
+  write.table(subset(res_df, sig_raw == "up"),   file.path(tbl_dir, paste0("up_", nm, ".tsv")),
+              sep = "\t", quote = FALSE, row.names = FALSE)
+  write.table(subset(res_df, sig_raw == "down"), file.path(tbl_dir, paste0("down_", nm, ".tsv")),
+              sep = "\t", quote = FALSE, row.names = FALSE)
+  
   counts_summary_raw <- rbind(counts_summary_raw, data.frame(
     contrast = nm,
     n_up     = sum(res_df$sig_raw == "up"),
@@ -230,27 +277,27 @@ if (exists("dds2")) {
 pca_colors <- c("treated" = "#D62728", "control" = "#1F77B4")
 
 for (g in levels(dds1$group)) {
-
+  
   ref <- if (grepl("_OHT$", g)) "DMSO_OHT" else "DMSO"
   if (g == ref || !(ref %in% levels(dds1$group))) next
-
+  
   nm <- g
   message(" [PCA] ", nm, " vs ", ref)
-
+  
   keep_samples <- metadata$group %in% c(ref, g)
   sub_metadata <- metadata[keep_samples, ]
   sub_counts   <- count_mat[, sub_metadata$SampleID, drop = FALSE]
-
+  
   dds_sub <- DESeqDataSetFromMatrix(round(sub_counts), sub_metadata, design = ~ group)
   dds_sub$group <- droplevels(dds_sub$group)
   vsd_sub <- vst(dds_sub, blind = TRUE)
-
+  
   pca_data <- plotPCA(vsd_sub, intgroup = "group", returnData = TRUE)
   percentVar <- round(100 * attr(pca_data, "percentVar"))
-
+  
   pca_data$group <- factor(pca_data$group, levels = c(ref, g))
   color_map <- setNames(c(pca_colors["control"], pca_colors["treated"]), c(ref, g))
-
+  
   p_pca <- ggplot(pca_data, aes(PC1, PC2, color = group)) +
     geom_point(size = 0.6, alpha = 0.8) +
     scale_color_manual(values = color_map, name = "Condition", labels = c(ref, g)) +
@@ -259,7 +306,7 @@ for (g in levels(dds1$group)) {
          title = paste("PCA:", g, "vs", ref)) +
     theme_bw(base_size = 10) +
     theme(legend.position = "right")
-
+  
   ggsave(file.path(fig_dir, paste0("PCA_", g, "_vs_", ref, ".png")),
          p_pca, width = 6, height = 5, dpi = 300)
 }
@@ -273,30 +320,30 @@ x_lim_raw <- lim_raw$x_lim
 y_lim_raw <- lim_raw$y_lim
 
 for (fp in files) {
-
+  
   nm_raw <- tools::file_path_sans_ext(basename(fp))
   nm <- sub("^tT_", "", nm_raw)
-
+  
   res_df <- tryCatch(read.delim(fp, check.names = FALSE), error = function(e) NULL)
   if (is.null(res_df) || nrow(res_df) == 0) {
     message(" [skip] ", nm, " — file empty or unreadable.")
     next
   }
-
+  
   needed <- c("baseMean", "log2FoldChange", "padj")
   if (!all(needed %in% names(res_df))) {
     message(" [skip] ", nm, " — missing required columns: ", paste(setdiff(needed, names(res_df)), collapse = ", "))
     next
   }
-
+  
   if (!"sig_raw" %in% names(res_df)) {
     res_df$sig_raw <- ifelse(!is.na(res_df$padj) & res_df$padj < padj_cutoff & res_df$log2FoldChange >  lfc_cutoff, "up",
                              ifelse(!is.na(res_df$padj) & res_df$padj < padj_cutoff & res_df$log2FoldChange < -lfc_cutoff, "down", "ns"))
   }
-
+  
   res_df$cat <- factor(res_df$sig_raw, levels = c("ns", "down", "up"))
   plot_df <- res_df %>% arrange(cat)
-
+  
   p_ma <- ggplot(plot_df, aes(x = log10(baseMean + 1), y = log2FoldChange, color = cat)) +
     geom_point(size = 0.6, alpha = 0.85) +
     scale_color_manual(values = col_scale,
@@ -306,7 +353,7 @@ for (fp in files) {
     geom_hline(yintercept = c(-lfc_cutoff, lfc_cutoff), linetype = "dashed") +
     labs(title = paste("MA:", nm), x = "log10(baseMean + 1)", y = "log2(Fold Change)") +
     theme_bw(10)
-
+  
   p_vol <- ggplot(plot_df, aes(x = log2FoldChange, y = -log10(pmax(padj, .Machine$double.xmin)), color = cat)) +
     geom_point(size = 0.6, alpha = 0.8) +
     scale_color_manual(values = col_scale,
@@ -317,11 +364,11 @@ for (fp in files) {
     geom_hline(yintercept = -log10(padj_cutoff), linetype = "dashed") +
     labs(title = paste("Volcano:", nm), x = "log2(Fold Change)", y = "-log10(padj)") +
     theme_bw(10)
-
+  
   if (!is.null(x_lim_raw) && !is.null(y_lim_raw)) {
     p_vol <- p_vol + coord_cartesian(xlim = x_lim_raw, ylim = y_lim_raw)
   }
-
+  
   ggsave(file.path(fig_dir, paste0("MA_", nm, ".png")), p_ma,  width = 6,  height = 5, dpi = 300)
   ggsave(file.path(fig_dir, paste0("Volcano_", nm, ".png")), p_vol, width = 6.5, height = 5, dpi = 300)
 }
@@ -333,22 +380,22 @@ for (fp in files) {
 counts_summary_shr <- data.frame()
 
 for (g in levels(dds1$group)) {
-
+  
   ref <- if (grepl("_OHT$", g)) "DMSO_OHT" else "DMSO"
   if (g == "DMSO_OHT") ref <- "DMSO"
-
+  
   if (g == ref || !(ref %in% levels(dds1$group))) next
-
+  
   nm <- if (g == "DMSO_OHT") "DMSO_OHT_vs_DMSO" else g
   message(" [SHRUNKEN] ", nm)
-
+  
   dds_use <- if (ref == "DMSO_OHT") dds2 else dds1
   coef_name <- paste0("group_", g, "_vs_", ref)
   rn <- resultsNames(dds_use)
   if (!coef_name %in% rn) next
-
+  
   res_raw <- results(dds_use, contrast = c("group", g, ref))
-
+  
   res_shr <- tryCatch(
     lfcShrink(dds_use, coef = coef_name, res = res_raw, type = shrink_type),
     error = function(e) {
@@ -356,27 +403,90 @@ for (g in levels(dds1$group)) {
       lfcShrink(dds_use, coef = coef_name, res = res_raw, type = "normal")
     }
   )
-
+  
   res_df <- as.data.frame(res_shr)
   res_df[[id_col]] <- strip_version(rownames(res_df))
   res_df <- merge(res_df, annotation2, by = id_col, all.x = TRUE, sort = FALSE)
-
+  
   nc <- counts(dds_use, normalized = TRUE)
   idx_t <- which(metadata$group == g)
   idx_c <- which(metadata$group == ref)
   res_df$avg_treated  <- rowMeans(nc[, idx_t, drop = FALSE], na.rm = TRUE)
   res_df$avg_control  <- rowMeans(nc[, idx_c, drop = FALSE], na.rm = TRUE)
-
+  
   res_df$sig_shr <- ifelse(!is.na(res_df$padj) & res_df$padj < padj_cutoff & res_df$log2FoldChange >  lfc_cutoff, "up",
                            ifelse(!is.na(res_df$padj) & res_df$padj < padj_cutoff & res_df$log2FoldChange < -lfc_cutoff, "down", "ns"))
-
+  
   write.table(res_df, file.path(shr_tbl, paste0("tT_", nm, ".tsv")),
               sep = "\t", quote = FALSE, row.names = FALSE)
   write.table(subset(res_df, sig_shr == "up"),   file.path(shr_tbl, paste0("up_", nm, ".tsv")),
               sep = "\t", quote = FALSE, row.names = FALSE)
   write.table(subset(res_df, sig_shr == "down"), file.path(shr_tbl, paste0("down_", nm, ".tsv")),
               sep = "\t", quote = FALSE, row.names = FALSE)
+  
+  counts_summary_shr <- rbind(counts_summary_shr, data.frame(
+    contrast     = nm,
+    n_up_shr     = sum(res_df$sig_shr == "up"),
+    n_down_shr   = sum(res_df$sig_shr == "down")
+  ))
+}
 
+## ============================================================
+## EXTRA (SHRUNK): drug_OHT vs drug  => tT_drug_OHT__drug
+## ============================================================
+# This adds: tT_<drug>_OHT__<drug>.tsv (+ up/down) into SHRUNK tables
+
+all_groups2 <- levels(dds1$group)
+drug_groups2 <- all_groups2[!grepl("_OHT$", all_groups2)]
+drug_groups2 <- setdiff(drug_groups2, c("DMSO", "DMSO_OHT"))
+
+for (drug in drug_groups2) {
+  
+  g_oht <- paste0(drug, "_OHT")
+  if (!(g_oht %in% all_groups2)) next
+  
+  nm <- paste0(drug, "_OHT__", drug)
+  message(" [SHRUNKEN] ", nm)
+  
+  ## IMPORTANT: apeglm needs an existing coef, so relevel ref to <drug>
+  dds_tmp <- dds1
+  dds_tmp$group <- relevel(dds_tmp$group, ref = drug)
+  dds_tmp <- DESeq(dds_tmp, parallel = TRUE)
+  
+  coef_name <- paste0("group_", g_oht, "_vs_", drug)
+  rn <- resultsNames(dds_tmp)
+  if (!coef_name %in% rn) next
+  
+  res_raw <- results(dds_tmp, contrast = c("group", g_oht, drug))
+  
+  res_shr <- tryCatch(
+    lfcShrink(dds_tmp, coef = coef_name, res = res_raw, type = shrink_type),
+    error = function(e) {
+      message("apeglm failed, using 'normal'.")
+      lfcShrink(dds_tmp, coef = coef_name, res = res_raw, type = "normal")
+    }
+  )
+  
+  res_df <- as.data.frame(res_shr)
+  res_df[[id_col]] <- strip_version(rownames(res_df))
+  res_df <- merge(res_df, annotation2, by = id_col, all.x = TRUE, sort = FALSE)
+  
+  nc1 <- counts(dds_tmp, normalized = TRUE)
+  idx_t <- which(metadata$group == g_oht)
+  idx_c <- which(metadata$group == drug)
+  res_df$avg_treated  <- rowMeans(nc1[, idx_t, drop = FALSE], na.rm = TRUE)
+  res_df$avg_control  <- rowMeans(nc1[, idx_c, drop = FALSE], na.rm = TRUE)
+  
+  res_df$sig_shr <- ifelse(!is.na(res_df$padj) & res_df$padj < padj_cutoff & res_df$log2FoldChange >  lfc_cutoff, "up",
+                           ifelse(!is.na(res_df$padj) & res_df$padj < padj_cutoff & res_df$log2FoldChange < -lfc_cutoff, "down", "ns"))
+  
+  write.table(res_df, file.path(shr_tbl, paste0("tT_", nm, ".tsv")),
+              sep = "\t", quote = FALSE, row.names = FALSE)
+  write.table(subset(res_df, sig_shr == "up"),   file.path(shr_tbl, paste0("up_", nm, ".tsv")),
+              sep = "\t", quote = FALSE, row.names = FALSE)
+  write.table(subset(res_df, sig_shr == "down"), file.path(shr_tbl, paste0("down_", nm, ".tsv")),
+              sep = "\t", quote = FALSE, row.names = FALSE)
+  
   counts_summary_shr <- rbind(counts_summary_shr, data.frame(
     contrast     = nm,
     n_up_shr     = sum(res_df$sig_shr == "up"),
@@ -398,21 +508,21 @@ x_lim_shr <- lim_shr$x_lim
 y_lim_shr <- lim_shr$y_lim
 
 for (fp in files_shr) {
-
+  
   nm_raw <- tools::file_path_sans_ext(basename(fp))
   nm <- sub("^tT_", "", nm_raw)
-
+  
   res_df <- tryCatch(read.delim(fp, check.names = FALSE), error = function(e) NULL)
   if (is.null(res_df) || nrow(res_df) == 0) {
     message(" [skip] ", nm, " — empty or unreadable file.")
     next
   }
-
+  
   if (!"sig_shr" %in% colnames(res_df)) next
-
+  
   res_df$cat <- factor(res_df$sig_shr, levels = c("ns", "down", "up"))
   plot_df <- res_df %>% arrange(cat)
-
+  
   p_ma <- ggplot(plot_df, aes(x = log10(baseMean + 1), y = log2FoldChange, color = cat)) +
     geom_point(size = 0.6, alpha = 0.85) +
     scale_color_manual(values = col_scale,
@@ -423,7 +533,7 @@ for (fp in files_shr) {
     labs(title = paste("MA (shrunk):", nm),
          x = "log10(baseMean + 1)", y = "log2(Fold Change)") +
     theme_bw(10)
-
+  
   p_vol <- ggplot(plot_df, aes(x = log2FoldChange, y = -log10(pmax(padj, .Machine$double.xmin)), color = cat)) +
     geom_point(size = 0.6, alpha = 0.8) +
     scale_color_manual(values = col_scale,
@@ -434,12 +544,11 @@ for (fp in files_shr) {
     geom_hline(yintercept = -log10(padj_cutoff), linetype = "dashed") +
     labs(title = paste("Volcano (shrunk):", nm), x = "log2(Fold Change)", y = "-log10(padj)") +
     theme_bw(10)
-
+  
   if (!is.null(x_lim_shr) && !is.null(y_lim_shr)) {
     p_vol <- p_vol + coord_cartesian(xlim = x_lim_shr, ylim = y_lim_shr)
   }
-
-
+  
   ggsave(file.path(shr_fig, paste0("MA_", nm, ".png")), p_ma,  width = 6, height = 5, dpi = 300)
   ggsave(file.path(shr_fig, paste0("Volcano_", nm, ".png")), p_vol, width = 6.5, height = 5, dpi = 300)
 }

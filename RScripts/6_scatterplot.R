@@ -1,12 +1,11 @@
-## ============================================================
-## 6_scatterplots.R — Two scatterplots per drug (shrunk log2FC)
-## 1) All genes gray + enhanced/suppressed/switched colored (legend only, no labels)
-## 2) All genes gray + independent_up/down colored (legend only, no labels)
-## ============================================================
+## =========================
+## 6_scatterplots.R
+## =========================
 
 suppressPackageStartupMessages({
   library(tidyverse)
   library(ggplot2)
+  library(patchwork)
 })
 
 ## -------------------- Parameters --------------------
@@ -26,27 +25,31 @@ drug_list <- c("11j", "KVS", "11j_PlaB", "KVS_PlaB", "PlaB")
 ## -------------------- Colors --------------------
 col_gray <- "gray88"
 
-## Main categories (match 4_categories naming)
 cols_main <- c(
-  enhanced_up       = "#D62728",  # red
-  enhanced_down     = "#1F77B4",  # blue
-  suppressed_up     = "#FF7F0E",  # orange
-  suppressed_down   = "#9467BD",  # purple
-  switched_positive = "#2CA02C",  # green
-  switched_negative = "#17BECF"   # cyan
+  enhanced_up       = "#D62728",
+  enhanced_down     = "#1F77B4",
+  suppressed_up     = "#FF7F0E",
+  suppressed_down   = "#9467BD",
+  switched_positive = "#2CA02C",
+  switched_negative = "#17BECF"
 )
 
-## Independent: near red / near blue
 cols_ind <- c(
-  independent_up   = "#E31A1C",   # red-ish
-  independent_down = "#1F78B4"    # blue-ish
+  independent_up   = "#E31A1C",
+  independent_down = "#1F78B4"
 )
 
-## -------------------- Dot sizes (panel-friendly) --------------------
-pt_other <- 0.85
-pt_cat   <- 1.05
+cols_shift <- c(
+  shifted_baseline_enhanced_up     = "#D62728",
+  shifted_baseline_enhanced_down   = "#1F77B4",
+  shifted_baseline_suppressed_up   = "#FF7F0E",
+  shifted_baseline_suppressed_down = "#9467BD"
+)
 
-## -------------------- Helper functions --------------------
+## -------------------- Sizes (publication) --------------------
+pt_other <- 1.2
+pt_cat   <- 1.6
+
 safe_num <- function(x) x[is.finite(x) & !is.na(x)]
 
 pick_id_col <- function(df) {
@@ -93,25 +96,54 @@ make_merged_fc <- function(drug) {
   )
 }
 
-axis_x <- function(drug) bquote(atop(.(drug) ~ "/ DMSO", "(" * log[2] * "FC" * ")"))
-axis_y <- function(drug) bquote(atop(.(drug) ~ "+ OHT / DMSO + OHT", "(" * log[2] * "FC" * ")"))
+axis_x <- function(drug) {
+  bquote(bold(atop(.(drug) ~ "/ DMSO", "(" * log[2] * "FC" * ")")))
+}
+axis_y <- function(drug) {
+  bquote(bold(atop(.(drug) ~ "+ OHT / DMSO + OHT", "(" * log[2] * "FC" * ")")))
+}
 
 theme_scatter <- function() {
-  theme_bw(base_size = 10) +
+  theme_bw(base_size = 14) +
     theme(
       panel.grid   = element_blank(),
-      plot.title   = element_text(face = "bold", hjust = 0.5, size = 11),
-      axis.title   = element_text(size = 10),
-      axis.text    = element_text(size = 9),
-      legend.title = element_text(size = 9),
-      legend.text  = element_text(size = 8),
-      legend.position = "right"
+      plot.title   = element_text(face = "bold", hjust = 0.5, size = 16),
+      axis.title   = element_text(face = "bold", size = 15),
+      axis.text    = element_text(face = "bold", size = 13),
+      legend.title = element_text(face = "bold", size = 14),
+      legend.text  = element_text(face = "bold", size = 12),
+      legend.key.size   = unit(0.6, "cm"),
+      legend.spacing.x  = unit(0.4, "cm"),
+      legend.position   = "right"
     )
 }
 
-## ============================================================
-## Pre-pass: compute GLOBAL x/y limits across all drugs
-## ============================================================
+save_both <- function(filename_base, plot_obj, width, height, dpi = 600) {
+  ggsave(paste0(filename_base, ".pdf"),  plot_obj, width = width, height = height)
+  ggsave(paste0(filename_base, ".tiff"), plot_obj,
+         width = width, height = height, dpi = dpi,
+         device = "tiff", compression = "lzw")
+}
+
+get_legend <- function(p) {
+  g <- ggplotGrob(p)
+  idx <- which(sapply(g$grobs, function(x) x$name) == "guide-box")
+  if (length(idx) == 0) return(NULL)
+  g$grobs[[idx[1]]]
+}
+
+make_vertical_legend <- function(p, title = NULL) {
+  p2 <- p +
+    guides(color = guide_legend(ncol = 1, byrow = TRUE)) +
+    theme(
+      legend.position  = "right",
+      legend.direction = "vertical",
+      legend.box       = "vertical"
+    )
+  if (!is.null(title)) p2 <- p2 + labs(color = title)
+  p2
+}
+## -------------------- Global limits --------------------
 scatter_list <- lapply(drug_list, make_merged_fc)
 names(scatter_list) <- drug_list
 
@@ -121,17 +153,19 @@ all_y <- safe_num(unlist(lapply(scatter_list, function(d) d$log2FC_withOHT), use
 lim_max <- max(abs(c(all_x, all_y)), na.rm = TRUE)
 xy_lim <- c(-lim_max, lim_max)
 
-## ============================================================
-## Main loop: TWO plots per drug
-## ============================================================
+## -------------------- Collect for combined panels --------------------
+p_main_list  <- list()
+p_ind_list   <- list()
+p_shift_list <- list()
+
 for (drug in drug_list) {
   message("Plotting: ", drug)
   
   df <- scatter_list[[drug]]
-  df$category_main <- "Other"
-  df$category_ind  <- "Other"
+  df$category_main  <- "Other"
+  df$category_ind   <- "Other"
+  df$category_shift <- "Other"
   
-  ## ---- Load IDs ----
   enh_up   <- load_ids("enhanced_up",       drug, analysis_level)
   enh_down <- load_ids("enhanced_down",     drug, analysis_level)
   sup_up   <- load_ids("suppressed_up",     drug, analysis_level)
@@ -142,7 +176,11 @@ for (drug in drug_list) {
   ind_up   <- load_ids("independent_up",    drug, analysis_level)
   ind_down <- load_ids("independent_down",  drug, analysis_level)
   
-  ## ---- Assign for plot 1 (main categories only) ----
+  sh_enh_up   <- load_ids("shifted_baseline_enhanced_up",     drug, analysis_level)
+  sh_enh_down <- load_ids("shifted_baseline_enhanced_down",   drug, analysis_level)
+  sh_sup_up   <- load_ids("shifted_baseline_suppressed_up",   drug, analysis_level)
+  sh_sup_down <- load_ids("shifted_baseline_suppressed_down", drug, analysis_level)
+  
   df$category_main[df$feature_id %in% enh_up]   <- "enhanced_up"
   df$category_main[df$feature_id %in% enh_down] <- "enhanced_down"
   df$category_main[df$feature_id %in% sup_up]   <- "suppressed_up"
@@ -151,19 +189,19 @@ for (drug in drug_list) {
   df$category_main[df$feature_id %in% swi_neg]  <- "switched_negative"
   df$category_main <- factor(df$category_main, levels = c("Other", names(cols_main)))
   
-  ## ---- Assign for plot 2 (independent only) ----
   df$category_ind[df$feature_id %in% ind_up]   <- "independent_up"
   df$category_ind[df$feature_id %in% ind_down] <- "independent_down"
   df$category_ind <- factor(df$category_ind, levels = c("Other", names(cols_ind)))
   
-  ## ========================================================
-  ## Plot 1: gray all + enhanced/suppressed/switched colored
-  ## ========================================================
+  df$category_shift[df$feature_id %in% sh_enh_up]   <- "shifted_baseline_enhanced_up"
+  df$category_shift[df$feature_id %in% sh_enh_down] <- "shifted_baseline_enhanced_down"
+  df$category_shift[df$feature_id %in% sh_sup_up]   <- "shifted_baseline_suppressed_up"
+  df$category_shift[df$feature_id %in% sh_sup_down] <- "shifted_baseline_suppressed_down"
+  df$category_shift <- factor(df$category_shift, levels = c("Other", names(cols_shift)))
+  
   p1 <- ggplot(df, aes(x = log2FC_noOHT, y = log2FC_withOHT)) +
-    ## --- reference lines ---
-    geom_vline(xintercept = 0, linetype = "dashed", color = "black", linewidth = 0.3) +
-    geom_hline(yintercept = 0, linetype = "dashed", color = "black", linewidth = 0.3) +
-    ## --- points ---
+    geom_vline(xintercept = 0, linetype = "dashed", color = "black", linewidth = 0.6) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "black", linewidth = 0.6) +
     geom_point(
       data  = df[df$category_main == "Other" | is.na(df$category_main), , drop = FALSE],
       color = col_gray, alpha = 0.55, size = pt_other
@@ -173,26 +211,16 @@ for (drug in drug_list) {
       aes(color = category_main),
       alpha = 0.9, size = pt_cat
     ) +
-    ## --- y = x diagonal (on top of points) ---
-    geom_abline(slope = 1, intercept = 0,
-                linetype = "dashed", color = "black", linewidth = 0.35) +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "black", linewidth = 0.8) +
     scale_color_manual(values = cols_main, drop = FALSE, name = "Category") +
     labs(title = drug, x = axis_x(drug), y = axis_y(drug)) +
     coord_fixed(ratio = 1) +
     coord_cartesian(xlim = xy_lim, ylim = xy_lim) +
     theme_scatter()
   
-  ggsave(file.path(fig_out, paste0(drug, ".png")),
-         p1, width = 6, height = 5, dpi = 300)
-  
-  ## ========================================================
-  ## Plot 2: gray all + independent_up/down colored
-  ## ========================================================
   p2 <- ggplot(df, aes(x = log2FC_noOHT, y = log2FC_withOHT)) +
-    ## --- reference lines ---
-    geom_vline(xintercept = 0, linetype = "dashed", color = "black", linewidth = 0.3) +
-    geom_hline(yintercept = 0, linetype = "dashed", color = "black", linewidth = 0.3) +
-    ## --- points ---
+    geom_vline(xintercept = 0, linetype = "dashed", color = "black", linewidth = 0.6) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "black", linewidth = 0.6) +
     geom_point(
       data  = df[df$category_ind == "Other" | is.na(df$category_ind), , drop = FALSE],
       color = col_gray, alpha = 0.55, size = pt_other
@@ -202,17 +230,89 @@ for (drug in drug_list) {
       aes(color = category_ind),
       alpha = 0.9, size = pt_cat
     ) +
-    ## --- y = x diagonal (on top of points) ---
-    geom_abline(slope = 1, intercept = 0,
-                linetype = "dashed", color = "black", linewidth = 0.35) +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "black", linewidth = 0.8) +
     scale_color_manual(values = cols_ind, drop = FALSE, name = "Independent") +
     labs(title = drug, x = axis_x(drug), y = axis_y(drug)) +
     coord_fixed(ratio = 1) +
     coord_cartesian(xlim = xy_lim, ylim = xy_lim) +
     theme_scatter()
   
-  ggsave(file.path(fig_out, paste0(drug, "_independent.png")),
-         p2, width = 6, height = 5, dpi = 300)
+  p3 <- ggplot(df, aes(x = log2FC_noOHT, y = log2FC_withOHT)) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "black", linewidth = 0.6) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "black", linewidth = 0.6) +
+    geom_point(
+      data  = df[df$category_shift == "Other" | is.na(df$category_shift), , drop = FALSE],
+      color = col_gray, alpha = 0.55, size = pt_other
+    ) +
+    geom_point(
+      data = df[df$category_shift != "Other" & !is.na(df$category_shift), , drop = FALSE],
+      aes(color = category_shift),
+      alpha = 0.9, size = pt_cat
+    ) +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "black", linewidth = 0.8) +
+    scale_color_manual(values = cols_shift, drop = FALSE, name = "Shifted") +
+    labs(title = drug, x = axis_x(drug), y = axis_y(drug)) +
+    coord_fixed(ratio = 1) +
+    coord_cartesian(xlim = xy_lim, ylim = xy_lim) +
+    theme_scatter()
+  
+  ## per-drug true squares (no legend)
+  save_both(file.path(fig_out, drug),                 p1 + theme(legend.position = "none"), 6, 6)
+  save_both(file.path(fig_out, paste0(drug, "_independent")), p2 + theme(legend.position = "none"), 6, 6)
+  save_both(file.path(fig_out, paste0(drug, "_shifted")),     p3 + theme(legend.position = "none"), 6, 6)
+  
+  ## keep for combined panels
+  p_main_list[[drug]]  <- p1
+  p_ind_list[[drug]]   <- p2
+  p_shift_list[[drug]] <- p3
 }
 
-message("Scatterplots complete: ", fig_out)
+
+comb_main <- wrap_plots(p_main_list, ncol = 3) &
+  theme(legend.position = "none")
+
+save_both(file.path(fig_out, "ALL_main_categories"), comb_main, 18, 12)
+
+comb_ind <- wrap_plots(p_ind_list, ncol = 3) &
+  theme(legend.position = "none")
+
+save_both(file.path(fig_out, "ALL_independent"), comb_ind, 18, 12)
+
+comb_shift <- wrap_plots(p_shift_list, ncol = 3) &
+  theme(legend.position = "none")
+
+save_both(file.path(fig_out, "ALL_shifted_baseline"), comb_shift, 18, 12)
+
+## ---- MAIN legend only (vertical) ----
+p_rep_main <- make_vertical_legend(p_main_list[[drug_list[1]]], title = "Category")
+leg_main <- get_legend(p_rep_main)
+if (!is.null(leg_main)) {
+  save_both(
+    file.path(fig_out, "LEGEND_main_categories"),
+    patchwork::wrap_elements(full = leg_main),
+    width = 4, height = 8, dpi = 600
+  )
+}
+
+## ---- INDEPENDENT legend only (vertical) ----
+p_rep_ind <- make_vertical_legend(p_ind_list[[drug_list[1]]], title = "Independent")
+leg_ind <- get_legend(p_rep_ind)
+if (!is.null(leg_ind)) {
+  save_both(
+    file.path(fig_out, "LEGEND_independent"),
+    patchwork::wrap_elements(full = leg_ind),
+    width = 4, height = 5, dpi = 600
+  )
+}
+
+## ---- SHIFTED legend only (vertical) ----
+p_rep_shift <- make_vertical_legend(p_shift_list[[drug_list[1]]], title = "Shifted")
+leg_shift <- get_legend(p_rep_shift)
+if (!is.null(leg_shift)) {
+  save_both(
+    file.path(fig_out, "LEGEND_shifted_baseline"),
+    patchwork::wrap_elements(full = leg_shift),
+    width = 4, height = 7, dpi = 600
+  )
+}
+message("Done: ", fig_out)
