@@ -237,4 +237,206 @@ for (lg in legend_types) {
   }
 }
 
+
+
+## ============================================================
+## ADD-ON: Category correlation plots (KEEP existing plots above)
+## x: log2FC (DMSO_OHT / DMSO)
+## y: log2FC (drug_OHT / DMSO_OHT)
+## ============================================================
+
+## ---- safety: require objects from your pipeline ----
+stopifnot(dir.exists(de_tbl))
+stopifnot(dir.exists(cat_tbl))
+stopifnot(length(drug_list) > 0)
+
+## ---- local helpers (namespaced to avoid collisions) ----
+corr_load_tt <- function(name) {
+  fp <- file.path(de_tbl, paste0("tT_", name, ".tsv"))
+  if (!file.exists(fp)) stop("Missing DE table: ", fp)
+  df <- read.delim(fp, check.names = FALSE)
+  colnames(df) <- trimws(colnames(df))
+  df
+}
+
+corr_pick_id_col <- function(df) {
+  cand <- intersect(c("isoform_id", "gene_id", "feature_id"), names(df))
+  if (length(cand) == 0) stop("No ID column found in DE table.")
+  cand[1]
+}
+
+corr_load_ids <- function(tag, drug) {
+  fn <- file.path(cat_tbl, paste0(tag, "_", drug, ".tsv"))
+  if (!file.exists(fn)) return(character(0))
+  df <- read.delim(fn, check.names = FALSE)
+  if (analysis_level == "gene" && "gene_id" %in% names(df)) {
+    unique(na.omit(df$gene_id))
+  } else if (analysis_level == "isoform" && "isoform_id" %in% names(df)) {
+    unique(na.omit(df$isoform_id))
+  } else {
+    character(0)
+  }
+}
+
+corr_safe_num <- function(x) x[is.finite(x) & !is.na(x)]
+
+corr_axis_x <- function() {
+  bquote(bold(atop("OHT / DMSO", "(" * log[2] * "FC" * ")")))
+}
+corr_axis_y <- function(drug) {
+  bquote(bold(atop(.(drug) ~ "+ OHT / DMSO + OHT", "(" * log[2] * "FC" * ")")))
+}
+
+## ---- build merged x/y for each drug ----
+## x = DMSO_OHT_vs_DMSO
+## y = drug_OHT (which is drug+OHT vs DMSO+OHT in your DEAnalysis naming)
+corr_make_xy <- function(drug) {
+  
+  t_x <- corr_load_tt("DMSO_OHT_vs_DMSO")
+  t_y <- corr_load_tt(paste0(drug, "_OHT"))
+  
+  id_x <- corr_pick_id_col(t_x)
+  id_y <- corr_pick_id_col(t_y)
+  
+  t_x <- dplyr::rename(t_x, feature_id = !!id_x)
+  t_y <- dplyr::rename(t_y, feature_id = !!id_y)
+  
+  if (!"log2FoldChange" %in% names(t_x)) stop("log2FoldChange missing in tT_DMSO_OHT_vs_DMSO.tsv")
+  if (!"log2FoldChange" %in% names(t_y)) stop("log2FoldChange missing in tT_", drug, "_OHT.tsv")
+  
+  dplyr::full_join(
+    t_x %>%
+      dplyr::select(feature_id, log2FoldChange) %>%
+      dplyr::rename(log2FC_OHT = log2FoldChange),
+    t_y %>%
+      dplyr::select(feature_id, log2FoldChange) %>%
+      dplyr::rename(log2FC_drug_in_OHT = log2FoldChange),
+    by = "feature_id"
+  )
+}
+
+corr_list <- lapply(drug_list, corr_make_xy)
+names(corr_list) <- drug_list
+
+## ---- global limits (true squares, comparable across all plots) ----
+all_x <- corr_safe_num(unlist(lapply(corr_list, \(d) d$log2FC_OHT), use.names = FALSE))
+all_y <- corr_safe_num(unlist(lapply(corr_list, \(d) d$log2FC_drug_in_OHT), use.names = FALSE))
+lim_max <- max(abs(c(all_x, all_y)), na.rm = TRUE)
+corr_lim <- c(-lim_max, lim_max)
+
+## ---- plot builder using your same visual language ----
+corr_plot_fun <- function(df, drug, cat_col, cols, legend_title) {
+  
+  ggplot(df, aes(x = log2FC_OHT, y = log2FC_drug_in_OHT)) +
+    geom_vline(xintercept = 0, linetype = "dashed", linewidth = 0.6) +
+    geom_hline(yintercept = 0, linetype = "dashed", linewidth = 0.6) +
+    geom_point(
+      data = df[df[[cat_col]] == "Other", ],
+      color = col_gray, size = pt_other, alpha = 0.6
+    ) +
+    geom_point(
+      data = df[df[[cat_col]] != "Other", ],
+      aes(color = .data[[cat_col]]),
+      size = pt_cat, alpha = 0.9
+    ) +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed", linewidth = 0.8) +
+    scale_color_manual(values = cols, drop = FALSE, name = legend_title) +
+    labs(title = drug, x = corr_axis_x(), y = corr_axis_y(drug)) +
+    coord_fixed() +
+    coord_cartesian(xlim = corr_lim, ylim = corr_lim) +
+    theme_scatter()  ## <— uses your exact theme from 6_scatterplots
+}
+
+## ---- store plots for combined panels (no legend) ----
+corr_main_list      <- list()
+corr_ind_list       <- list()
+corr_shift_list     <- list()
+corr_shift_ind_list <- list()
+
+## ==================== LOOP: per drug ====================
+for (drug in drug_list) {
+  
+  message("Correlation plots (categories): ", drug)
+  
+  df <- corr_list[[drug]]
+  
+  df$main      <- "Other"
+  df$ind       <- "Other"
+  df$shift     <- "Other"
+  df$shift_ind <- "Other"
+  
+  ## ---- assign categories (same tags as 6_scatterplots) ----
+  df$main[df$feature_id %in% corr_load_ids("enhanced_up", drug)]       <- "enhanced_up"
+  df$main[df$feature_id %in% corr_load_ids("enhanced_down", drug)]     <- "enhanced_down"
+  df$main[df$feature_id %in% corr_load_ids("suppressed_up", drug)]     <- "suppressed_up"
+  df$main[df$feature_id %in% corr_load_ids("suppressed_down", drug)]   <- "suppressed_down"
+  df$main[df$feature_id %in% corr_load_ids("switched_positive", drug)] <- "switched_positive"
+  df$main[df$feature_id %in% corr_load_ids("switched_negative", drug)] <- "switched_negative"
+  
+  df$ind[df$feature_id %in% corr_load_ids("independent_up", drug)]     <- "independent_up"
+  df$ind[df$feature_id %in% corr_load_ids("independent_down", drug)]   <- "independent_down"
+  
+  df$shift[df$feature_id %in% corr_load_ids("shifted_baseline_enhanced_up", drug)]       <- "shifted_baseline_enhanced_up"
+  df$shift[df$feature_id %in% corr_load_ids("shifted_baseline_enhanced_down", drug)]     <- "shifted_baseline_enhanced_down"
+  df$shift[df$feature_id %in% corr_load_ids("shifted_baseline_suppressed_up", drug)]     <- "shifted_baseline_suppressed_up"
+  df$shift[df$feature_id %in% corr_load_ids("shifted_baseline_suppressed_down", drug)]   <- "shifted_baseline_suppressed_down"
+  
+  df$shift_ind[df$feature_id %in% corr_load_ids("shifted_baseline_independent_up", drug)]   <- "shifted_baseline_independent_up"
+  df$shift_ind[df$feature_id %in% corr_load_ids("shifted_baseline_independent_down", drug)] <- "shifted_baseline_independent_down"
+  
+  ## ---- build plots ----
+  p1 <- corr_plot_fun(df, drug, "main",      cols_main,      "Category")
+  p2 <- corr_plot_fun(df, drug, "ind",       cols_ind,       "Independent")
+  p3 <- corr_plot_fun(df, drug, "shift",     cols_shift,     "Shifted")
+  p4 <- corr_plot_fun(df, drug, "shift_ind", cols_shift_ind, "Shifted Independent")
+  
+  ## ---- save individual (NO legend) ----
+  save_both(file.path(fig_out, paste0("CORR_OHT_", drug)),                      p1 + theme(legend.position = "none"), 6, 6)
+  save_both(file.path(fig_out, paste0("CORR_OHT_", drug, "_independent")),      p2 + theme(legend.position = "none"), 6, 6)
+  save_both(file.path(fig_out, paste0("CORR_OHT_", drug, "_shifted")),          p3 + theme(legend.position = "none"), 6, 6)
+  save_both(file.path(fig_out, paste0("CORR_OHT_", drug, "_shifted_independent")), p4 + theme(legend.position = "none"), 6, 6)
+  
+  ## ---- store for combined panels ----
+  corr_main_list[[drug]]      <- p1
+  corr_ind_list[[drug]]       <- p2
+  corr_shift_list[[drug]]     <- p3
+  corr_shift_ind_list[[drug]] <- p4
+}
+
+## ---- combined panels (no legend) ----
+save_both(file.path(fig_out, "CORR_OHT_ALL_main"),
+          wrap_plots(corr_main_list, ncol = 3) & theme(legend.position = "none"),
+          18, 12)
+
+save_both(file.path(fig_out, "CORR_OHT_ALL_independent"),
+          wrap_plots(corr_ind_list, ncol = 3) & theme(legend.position = "none"),
+          18, 12)
+
+save_both(file.path(fig_out, "CORR_OHT_ALL_shifted"),
+          wrap_plots(corr_shift_list, ncol = 3) & theme(legend.position = "none"),
+          18, 12)
+
+save_both(file.path(fig_out, "CORR_ALL_shifted_independent"),
+          wrap_plots(corr_shift_ind_list, ncol = 3) & theme(legend.position = "none"),
+          18, 12)
+
+## ---- separate VERTICAL legends (same approach as scatterplots) ----
+corr_legend_types <- list(
+  list(corr_main_list[[1]],      "Category",            "CORR_OHT_LEGEND_main"),
+  list(corr_ind_list[[1]],       "Independent",         "CORR_OHT_LEGEND_independent"),
+  list(corr_shift_list[[1]],     "Shifted",             "CORR_OHT_LEGEND_shifted"),
+  list(corr_shift_ind_list[[1]], "Shifted Independent", "CORR_OHT_LEGEND_shifted_independent")
+)
+
+for (lg in corr_legend_types) {
+  p_leg <- make_vertical_legend(lg[[1]], lg[[2]])
+  leg <- get_legend(p_leg)
+  if (!is.null(leg)) {
+    save_both(file.path(fig_out, lg[[3]]),
+              patchwork::wrap_elements(full = leg),
+              4, 8)
+  }
+}
+
+message("ADD-ON correlation section done: ", fig_out)
 message("Done.")
