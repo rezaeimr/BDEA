@@ -15,7 +15,6 @@ suppressPackageStartupMessages({
 
 ## ---------------- Parameters ----------------
 analysis_level  <- "gene"   # "gene" or "isoform"
-additive_delta <- 0.2       # |lfc(drug_OHT vs DMSO_OHT) - lfc(drug vs DMSO)| <= delta
 
 ## ---------------- Helpers ----------------
 strip_version <- function(x) sub("\\..*$", "", x)
