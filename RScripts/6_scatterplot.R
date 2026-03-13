@@ -15,7 +15,7 @@ drug_list <- c("11j", "KVS", "11j_PlaB", "KVS_PlaB", "PlaB")
 ## - tT_<drug>.tsv                   : drug / DMSO
 ## - tT_<drug>_OHT.tsv               : (drug+OHT) / (DMSO+OHT)
 ## - tT_DMSO_OHT_vs_DMSO.tsv         : OHT / DMSO
-## - tT_<drug>_OHT_vs_DMSO.tsv       : (drug+OHT) / DMSO   <-- MUST exist for CORR_OHT y-axis
+## - tT_<drug>_OHT_vs_DMSO.tsv       : (drug+OHT) / DMSO
 
 ## Required category tables:
 ## - results/4_categories/tables/<category>_<drug>.tsv
@@ -160,6 +160,12 @@ corr_axis_x <- function()
 corr_axis_y <- function(drug)
   bquote(bold(atop(.(drug) ~ "+ OHT / DMSO", "(" * log[2] * "FC" * ")")))
 
+corr2_axis_x <- function(drug)
+  bquote(bold(atop(.(drug) ~ "/ DMSO", "(" * log[2] * "FC" * ")")))
+
+corr2_axis_y <- function(drug)
+  bquote(bold(atop(.(drug) ~ "+ OHT / DMSO", "(" * log[2] * "FC" * ")")))
+
 ## ============================================================
 ## PART 1) Scatter: x = drug/DMSO, y = (drug+OHT)/(DMSO+OHT)
 ## ============================================================
@@ -192,6 +198,7 @@ scatter_lim <- c(-lim_scatter, lim_scatter)
 p_main_list  <- list()
 p_ind_list   <- list()
 p_shift_list <- list()
+p_add_list   <- list()
 
 for (drug in drug_list) {
   
@@ -199,6 +206,7 @@ for (drug in drug_list) {
   df$main  <- "Other"
   df$ind   <- "Other"
   df$shift <- "Other"
+  df$add   <- "Other"
   
   df$main[df$feature_id %in% load_ids("enhanced_up", drug)]       <- "enhanced_up"
   df$main[df$feature_id %in% load_ids("enhanced_down", drug)]     <- "enhanced_down"
@@ -215,17 +223,23 @@ for (drug in drug_list) {
   df$shift[df$feature_id %in% load_ids("shifted_baseline_suppressed_up", drug)]     <- "shifted_baseline_suppressed_up"
   df$shift[df$feature_id %in% load_ids("shifted_baseline_suppressed_down", drug)]   <- "shifted_baseline_suppressed_down"
   
+  df$add[df$feature_id %in% load_ids("additive_up", drug)]   <- "additive_up"
+  df$add[df$feature_id %in% load_ids("additive_down", drug)] <- "additive_down"
+  
   p1 <- plot_xy(df, "x", "y", "main",  cols_main,  drug, axis_x(drug), axis_y(drug), scatter_lim, "Category")
   p2 <- plot_xy(df, "x", "y", "ind",   cols_ind,   drug, axis_x(drug), axis_y(drug), scatter_lim, "Independent")
   p3 <- plot_xy(df, "x", "y", "shift", cols_shift, drug, axis_x(drug), axis_y(drug), scatter_lim, "Shifted")
+  p4 <- plot_xy(df, "x", "y", "add",   cols_add,   drug, axis_x(drug), axis_y(drug), scatter_lim, "Additive")
   
-  save_both(file.path(fig_out, drug),                        p1 + theme(legend.position = "none"), 6, 6)
-  save_both(file.path(fig_out, paste0(drug, "_independent")), p2 + theme(legend.position = "none"), 6, 6)
-  save_both(file.path(fig_out, paste0(drug, "_shifted")),     p3 + theme(legend.position = "none"), 6, 6)
+  save_both(file.path(fig_out, drug),                         p1 + theme(legend.position = "none"), 6, 6)
+  save_both(file.path(fig_out, paste0(drug, "_independent")),  p2 + theme(legend.position = "none"), 6, 6)
+  save_both(file.path(fig_out, paste0(drug, "_shifted")),      p3 + theme(legend.position = "none"), 6, 6)
+  save_both(file.path(fig_out, paste0(drug, "_additive")),     p4 + theme(legend.position = "none"), 6, 6)
   
   p_main_list[[drug]]  <- p1
   p_ind_list[[drug]]   <- p2
   p_shift_list[[drug]] <- p3
+  p_add_list[[drug]]   <- p4
 }
 
 save_both(file.path(fig_out, "ALL_main"),
@@ -234,11 +248,14 @@ save_both(file.path(fig_out, "ALL_independent"),
           wrap_plots(p_ind_list, ncol = 3) & theme(legend.position = "none"), 18, 12)
 save_both(file.path(fig_out, "ALL_shifted"),
           wrap_plots(p_shift_list, ncol = 3) & theme(legend.position = "none"), 18, 12)
+save_both(file.path(fig_out, "ALL_additive"),
+          wrap_plots(p_add_list, ncol = 3) & theme(legend.position = "none"), 18, 12)
 
 legend_types <- list(
   list(p_main_list[[1]],  "Category",    "LEGEND_main"),
   list(p_ind_list[[1]],   "Independent", "LEGEND_independent"),
-  list(p_shift_list[[1]], "Shifted",     "LEGEND_shifted")
+  list(p_shift_list[[1]], "Shifted",     "LEGEND_shifted"),
+  list(p_add_list[[1]],   "Additive",    "LEGEND_additive")
 )
 
 for (lg in legend_types) {
@@ -251,7 +268,6 @@ for (lg in legend_types) {
 
 ## ============================================================
 ## PART 2) CORR_OHT: x = OHT/DMSO, y = (drug+OHT)/DMSO
-## + Additive overlay (additive_up/down only)
 ## ============================================================
 
 corr_make_df <- function(drug) {
@@ -348,6 +364,111 @@ corr_legend_types <- list(
 )
 
 for (lg in corr_legend_types) {
+  p_leg <- make_vertical_legend(lg[[1]], lg[[2]])
+  leg <- get_legend(p_leg)
+  if (!is.null(leg)) {
+    save_both(file.path(fig_out, lg[[3]]), patchwork::wrap_elements(full = leg), 4, 8)
+  }
+}
+
+## ============================================================
+## PART 3) CORR_DRUG: x = drug/DMSO, y = (drug+OHT)/DMSO
+## ============================================================
+
+corr2_make_df <- function(drug) {
+  t_x <- load_tt(drug)
+  t_y <- load_tt(paste0(drug, "_OHT_vs_DMSO"))
+  
+  id_x <- pick_id_col(t_x)
+  id_y <- pick_id_col(t_y)
+  
+  t_x <- dplyr::rename(t_x, feature_id = !!id_x)
+  t_y <- dplyr::rename(t_y, feature_id = !!id_y)
+  
+  full_join(
+    t_x %>% select(feature_id, log2FoldChange) %>% rename(x = log2FoldChange),
+    t_y %>% select(feature_id, log2FoldChange) %>% rename(y = log2FoldChange),
+    by = "feature_id"
+  )
+}
+
+corr2_list <- lapply(drug_list, corr2_make_df)
+names(corr2_list) <- drug_list
+
+c2x <- safe_num(unlist(lapply(corr2_list, \(d) d$x), use.names = FALSE))
+c2y <- safe_num(unlist(lapply(corr2_list, \(d) d$y), use.names = FALSE))
+lim_corr2 <- max(abs(c(c2x, c2y)), na.rm = TRUE)
+corr2_lim <- c(-lim_corr2, lim_corr2)
+
+corr2_main_list  <- list()
+corr2_ind_list   <- list()
+corr2_shift_list <- list()
+corr2_add_list   <- list()
+
+for (drug in drug_list) {
+  
+  df <- corr2_list[[drug]]
+  
+  df$main  <- "Other"
+  df$ind   <- "Other"
+  df$shift <- "Other"
+  df$add   <- "Other"
+  
+  df$main[df$feature_id %in% load_ids("enhanced_up", drug)]       <- "enhanced_up"
+  df$main[df$feature_id %in% load_ids("enhanced_down", drug)]     <- "enhanced_down"
+  df$main[df$feature_id %in% load_ids("suppressed_up", drug)]     <- "suppressed_up"
+  df$main[df$feature_id %in% load_ids("suppressed_down", drug)]   <- "suppressed_down"
+  df$main[df$feature_id %in% load_ids("switched_positive", drug)] <- "switched_positive"
+  df$main[df$feature_id %in% load_ids("switched_negative", drug)] <- "switched_negative"
+  
+  df$ind[df$feature_id %in% load_ids("independent_up", drug)]   <- "independent_up"
+  df$ind[df$feature_id %in% load_ids("independent_down", drug)] <- "independent_down"
+  
+  df$shift[df$feature_id %in% load_ids("shifted_baseline_enhanced_up", drug)]       <- "shifted_baseline_enhanced_up"
+  df$shift[df$feature_id %in% load_ids("shifted_baseline_enhanced_down", drug)]     <- "shifted_baseline_enhanced_down"
+  df$shift[df$feature_id %in% load_ids("shifted_baseline_suppressed_up", drug)]     <- "shifted_baseline_suppressed_up"
+  df$shift[df$feature_id %in% load_ids("shifted_baseline_suppressed_down", drug)]   <- "shifted_baseline_suppressed_down"
+  
+  df$add[df$feature_id %in% load_ids("additive_up", drug)]   <- "additive_up"
+  df$add[df$feature_id %in% load_ids("additive_down", drug)] <- "additive_down"
+  
+  p1 <- plot_xy(df, "x", "y", "main",  cols_main,  drug, corr2_axis_x(drug), corr2_axis_y(drug), corr2_lim, "Category")
+  p2 <- plot_xy(df, "x", "y", "ind",   cols_ind,   drug, corr2_axis_x(drug), corr2_axis_y(drug), corr2_lim, "Independent")
+  p3 <- plot_xy(df, "x", "y", "shift", cols_shift, drug, corr2_axis_x(drug), corr2_axis_y(drug), corr2_lim, "Shifted")
+  p4 <- plot_xy(df, "x", "y", "add",   cols_add,   drug, corr2_axis_x(drug), corr2_axis_y(drug), corr2_lim, "Additive")
+  
+  save_both(file.path(fig_out, paste0("CORR_DRUG_", drug)),
+            p1 + theme(legend.position = "none"), 6, 6)
+  save_both(file.path(fig_out, paste0("CORR_DRUG_", drug, "_independent")),
+            p2 + theme(legend.position = "none"), 6, 6)
+  save_both(file.path(fig_out, paste0("CORR_DRUG_", drug, "_shifted")),
+            p3 + theme(legend.position = "none"), 6, 6)
+  save_both(file.path(fig_out, paste0("CORR_DRUG_", drug, "_additive")),
+            p4 + theme(legend.position = "none"), 6, 6)
+  
+  corr2_main_list[[drug]]  <- p1
+  corr2_ind_list[[drug]]   <- p2
+  corr2_shift_list[[drug]] <- p3
+  corr2_add_list[[drug]]   <- p4
+}
+
+save_both(file.path(fig_out, "CORR_DRUG_ALL_main"),
+          wrap_plots(corr2_main_list, ncol = 3) & theme(legend.position = "none"), 18, 12)
+save_both(file.path(fig_out, "CORR_DRUG_ALL_independent"),
+          wrap_plots(corr2_ind_list, ncol = 3) & theme(legend.position = "none"), 18, 12)
+save_both(file.path(fig_out, "CORR_DRUG_ALL_shifted"),
+          wrap_plots(corr2_shift_list, ncol = 3) & theme(legend.position = "none"), 18, 12)
+save_both(file.path(fig_out, "CORR_DRUG_ALL_additive"),
+          wrap_plots(corr2_add_list, ncol = 3) & theme(legend.position = "none"), 18, 12)
+
+corr2_legend_types <- list(
+  list(corr2_main_list[[1]],  "Category",    "CORR_DRUG_LEGEND_main"),
+  list(corr2_ind_list[[1]],   "Independent", "CORR_DRUG_LEGEND_independent"),
+  list(corr2_shift_list[[1]], "Shifted",     "CORR_DRUG_LEGEND_shifted"),
+  list(corr2_add_list[[1]],   "Additive",    "CORR_DRUG_LEGEND_additive")
+)
+
+for (lg in corr2_legend_types) {
   p_leg <- make_vertical_legend(lg[[1]], lg[[2]])
   leg <- get_legend(p_leg)
   if (!is.null(leg)) {
